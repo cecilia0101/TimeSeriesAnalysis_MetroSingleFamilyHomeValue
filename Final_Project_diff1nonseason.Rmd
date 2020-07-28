@@ -1,0 +1,223 @@
+---
+title: "Metro SingleFamily Home Values in NewYork"
+author: "QiAn Qiao, Sutong Yao"
+date: "2/18/2020"
+output: pdf_document
+---
+
+# Introduction
+In this analysis report, the data is the median prices for single family homes in US metro areas. Instead of choosing all metro areas, the New York metropolitan area is a typical area which we focus on. The New York metropolitan area is the most populous in the United States and continuously attract kpeople all over the world. As the center of finance, international trade, media, education, entertainment and other many factors, the home price for the New York metropolitan area is always the indicator of the economic development and attract people's attention. Moreover, the real estate of New York metropolitan area is one of the most expensive residential real estate markets. Analyzing the median prices can give investors more insights on their investment.
+
+The dataset are collected from Apr 1996 to Dec 2019. In order to get a more accurate model, the data from 1996 to 2012 which fluctuated dramatically has been ignored. Therefore, the data we analysis here is from January 2013 to December 2019. For the purpose of model testing, we withdraw the last 4 month median house price as test data, and the remaining data as the training dataset.
+```{r eval=F, echo=T}
+library(TSA)
+library(MASS)
+data <- read.csv('Metro_SingleFamily.csv', header=T)
+zillow_all <- ts(as.numeric(data[data$RegionName == 'New York, NY' , -c(1,2,3)]),start=c(1996,04),frequency =12)
+zillow <- window(zillow_all, start = 2013)
+zillow_train <- window(zillow,start = c(2013, 01),end=c(2019,08))
+zillow_test <- window(zillow, start=c(2019,09)) #withdraw the latest 4 observations to compare with our forecast
+```
+
+```{r}
+plot(zillow_train, xlab='Year', ylab='Median House Price', type='o')
+```
+*The time series plot suggest that this process is not stationary. No outliers in this dataset. There is a clear linear upward trend and also a notable nonconstant variance problem. And there is also no seasonality pattern.*
+```{r}
+# variance transformation
+BoxCox.ar1=function (y, order, lambda = seq(-2, 2, 0.01), plotit = TRUE, 
+          method = c("mle", "yule-walker", "burg", "ols", "yw"), ...) 
+{
+  if (missing(method)) 
+    method = "mle"
+  y = as.vector(y/(max(abs(y)) + 1))
+  if (any(y <= 0)) 
+    stop("Data values must be positive")
+  order = ar(log(y), method = method)$order
+  nlngmy <- sum(log(y))
+  if (!missing(lambda)) 
+    xl <- lambda
+  else xl <- seq(-2, 2, 0.1)
+  loglik <- as.vector(xl)
+  for (i in 1:length(xl)) if (abs(xl[i]) > 0) {
+    if (missing(order)) 
+      ar.result = ar((y^xl[i] - 1)/xl[i], method = method)
+    else ar.result = ar((y^xl[i] - 1)/xl[i], method = method, 
+                        order.max = order)
+    n = length(y) - ar.result$order
+    ar.res = ar.result$resid
+    n = length(y)
+    loglik[i] <- -n/2 * log(ar.result$var.pred) + (xl[i] - 
+                                                     1) * nlngmy
+  }
+  else {
+    if (missing(order)) 
+      ar.result = ar(log(y), method = method)
+    else ar.result = ar(log(y), method = method, order.max = order)
+    n = length(y) - ar.result$order
+    ar.res = ar.result$resid
+    n = length(y)
+    loglik[i] <- -n/2 * log(ar.result$var.pred) - nlngmy
+  }
+  if (plotit) {
+    plot(xl, loglik, xlab = expression(lambda), ylab = "Log Likelihood", 
+         type = "l", ylim = c(min(loglik), max(loglik)))
+    lambdahat <- loglik[loglik == max(loglik)]
+    limit <- lambdahat - 0.5 * qchisq(0.95, 1)
+    in.interval = xl[loglik >= limit]
+    lower = in.interval[1]
+    upper = rev(in.interval)[1]
+    mle = (xl[loglik == max(loglik)])[1]
+    lines(x = c(lower, lower), y = c(min(loglik), limit), 
+          lty = 2)
+    lines(x = c(upper, upper), y = c(min(loglik), limit), 
+          lty = 2)
+    lines(x = c(mle, mle), y = c(min(loglik), max(loglik)), 
+          lty = 2)
+    abline(limit, 0, lty = 2)
+    scal <- (par("usr")[4] - par("usr")[3])/par("pin")[2]
+    text(c(xl[1]) + 0.1, limit + 0.08 * scal, " 95%")
+  }
+  invisible(list(lambda = xl, loglike = loglik, mle = mle, 
+                 ci = c(lower, upper)))
+}
+```
+
+```{r}
+BoxCox.ar1(zillow_train, method = 'burg', lambda = seq(-1,4,0.01))
+```
+*A Box-Cox analysis suggests that no transformation is necessary for variance stabilization purposes*
+```{r}
+# difference
+acf(zillow_train)
+```
+*The acf decays slowly, which means it's non-stationary. Differencing is needed.*
+
+```{r}
+par(mfrow=c(1,2))
+plot(diff(zillow_train),ylab='First difference', xlab='Year', type='o')
+acf(diff(zillow_train),lag=120)
+```
+## Model Selection
+```{r}
+par(mfrow=c(1,2))
+acf(diff(zillow_train), lag=60)
+pacf(diff(zillow_train), lag=60)
+```
+```{r}
+eacf(diff(zillow_train))
+```
+*The acf cuts off at lag3, we can also say the acf tails off. The PACF cuts off at lag4 or we can also say that the PACF tails off. If we focus on the acf cuts off at lag3 and PACF tails off, the arima(4,1,0) fits. If we focus on the pacf off at lag3 and acf tails off, the arima(0,1,3) fits. By focus on EACF, the arima(1,1,2) also fits.*
+```{r}
+# arima(4,1,0)
+zillow.fit1 <- arima(zillow_train, order = c(4,1,0))
+zillow.fit1
+```
+*Eventhough ar2 and ar3 are not significant, but the ar4 is significant, the model can be chosed.*
+
+```{r}
+# arima(0,1,3)
+zillow.fit2 <- arima(zillow_train, order = c(0,1,3))
+zillow.fit2
+```
+*ma1, ma2 and ma3 are all significant.*
+
+```{r}
+# arima(1,1,2)
+zillow.fit3 <- arima(zillow_train, order = c(1,1,2))
+zillow.fit3
+```
+*ar1, ma1 and ma2 are all significant. Moreover, the aic is also lower than arima(4,1,0). Therefore the arima(1,1,2) is chosed.*
+
+## Model Diagnostic
+```{r, echo=TRUE}
+par(mfrow=c(2,2))
+plot(rstandard(zillow.fit3),xlab="Time",ylab="Standardised residuals",type='o')
+abline(h=0)
+hist(rstandard(zillow.fit3),xlab="Standardised residuals",main="")
+qqnorm(rstandard(zillow.fit3),main="")
+qqline(rstandard(zillow.fit3))
+```
+```{r, echo=TRUE}
+shapiro.test(rstandard(zillow.fit3))
+runs(rstandard(zillow.fit3))
+tsdiag(zillow.fit3,gof=20,omit.initial=F)
+```
+*The Shapiro-Wilk test does not reject normality of the residuals (p-value > 0.05). The runs test does not
+reject independence (p-value > 0.05). The Ljung-Box tests do not suggest lack of fit.The ARIMA(3,1,0) model for the data appears to do a fairly good job.*
+
+## Overfitting
+```{r}
+# arima(2,1,2)
+zillow.fit4 <- arima(zillow_train, order = c(2,1,2))
+zillow.fit4
+```
+*The ar1, ar2, ma1 and ma2 are all significant. Comparing with arima(1,1,2), the aic of arima(2,1,2) is lower. Therefore, arima(2,1,2) is better than arima (1,1,2)*
+```{r}
+#arima(1,1,3)
+zillow.fit5 <- arima(zillow_train, order = c(1,1,3))
+zillow.fit5
+```
+*The ma3 is non-significant. Therefore, arima(1,1,3) is not chosen*
+
+*The we select arima(2,1,2) as the fit model*
+
+## Model Diagnostic
+```{r, echo=TRUE}
+par(mfrow=c(2,2))
+plot(rstandard(zillow.fit4),xlab="Time",ylab="Standardised residuals",type='o')
+abline(h=0)
+hist(rstandard(zillow.fit4),xlab="Standardised residuals",main="")
+qqnorm(rstandard(zillow.fit4),main="")
+qqline(rstandard(zillow.fit4))
+```
+```{r, echo=TRUE}
+shapiro.test(rstandard(zillow.fit4))
+runs(rstandard(zillow.fit4))
+tsdiag(zillow.fit4,gof=20,omit.initial=F)
+```
+*The Shapiro-Wilk test does not reject normality of the residuals (p-value > 0.05). The runs test does not
+reject independence (p-value > 0.05). The Ljung-Box tests do not suggest lack of fit.The ARIMA(3,1,0) model for the data appears to do a fairly good job.*
+
+## Overfitting
+```{r}
+# arima(3,1,2)
+zillow.fit6 <- arima(zillow_train, order = c(3,1,2))
+zillow.fit6
+```
+*ar3 is not significant*
+```{r}
+# arima(2,1,3)
+zillow.fit7 <- arima(zillow_train, order = c(2,1,3))
+zillow.fit7
+```
+*ma3 is not significant*
+*Because the additional coefficients in the overgitted models are not statistically different from zero, we would not further consider these two models.*
+
+## Forcasting
+```{r, echo=TRUE}
+# Obtain MMSE forecasts (on square scale)
+zillow.predict <- predict(zillow.fit4,n.ahead=4)
+round(zillow.predict$pred,3)
+```
+```{r}
+round(zillow.predict$se,3)
+```
+```{r, echo=TRUE}
+#Create lower and upper prediction interval bounds
+lower.pi<-zillow.predict$pred-qnorm(0.975,0,1)*zillow.predict$se
+upper.pi<-zillow.predict$pred+qnorm(0.975,0,1)*zillow.predict$se
+data.frame(Month = c('Sep','Oct','Nov','Dec'), lower.pi,zillow.predict$pred, upper.pi, zillow_test)
+```
+
+```{r, echo=TRUE}
+plot(zillow.fit4,n.ahead=4,col='red',type='b',pch=16,ylab="montly house price",xlab="Month",n1=c(2019,01))
+points(zillow_test,col='blue')
+```
+
+
+
+
+
+
+
